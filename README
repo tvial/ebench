@@ -1,0 +1,114 @@
+EBench - Esper benchmarking framework
+
+This tool can be use to perform some benchmarking on the Esper CEP Engine (http://esper.codehaus.org).
+While absolute figures don't have much meaning in themselves, what's interesting here is understanding how the
+environment and Esper tuning affect performances.
+
+For this purpose, the tool relies on "runners" (Java classes) that feed events (POJOs) into an Esper engine,
+and gather statistics on the processing performance. Two indicators are measured: latency - the time, in µs, it took
+for an event entering the engine to get captured by statement listeners - and throughput - the rate, in events/sec,
+at which the benchmarking framework can feed events into the engine.
+
+The tool expects parameter on the command line, in the following form:
+   ebench RunnerClass NoOfEvents param1=value1 param2=value2 ...
+
+- RunnerClass is the name of the Java class implementing the runner. The package name is implicitely set to com.octo.ebench.runner
+- NoOfEvents is the number of events fed into the runner at each iteration of the outer loop (see below for the loops)
+- paramX=valueX are a set of parameter specifications.
+
+Parameter names are made of letters [A-Za-z] and values are positive integers or ranges. The parameters are directly passed
+to the runner given by RunnerClass. All parameters expected by the runner are mandatory.
+
+The tool is essentially made of two nested loops. Its main algorithm is:
+   Initialization and warming up
+   Outer loop for variable parameter
+      Reset and begin gathering statistics
+      Inner loop for event feeding (NoOfEvents)
+      Output statistics
+
+Any one of the parameters given on the command-line can be made variable; depending on the presence of such a parameter, the tool
+runs in single- or multiple-run mode.
+
+
+Single-run mode
+---------------
+This is used when all parameters are fixed. In this case the outer loop is just one iteration.
+What is displayed on the console:
+- the histogram of repartition of latencies, in CSV format: latency in µs;number of events subject to this latency
+- the average latency (weighted average on the histogram)
+- the global throughput, i.e. total number of events fed (NoOfEvents) divided by the time taken to stuff everything in
+
+Note that the number of events fed (NoOfEvents) can differ from the number of events captured by listeners (as given by the sum
+over the histogram). For example if a single input event is matched by several statements, it will be captured multiple times
+by the listeners. Technically, listeners capture derived events, and one primitive event can lead to several derived events.
+
+
+Multiple-run mode
+-----------------
+In this case one of the parameters is made variable, by specifying paramX=min..max,step on the command line. Min, max and step
+are all positive integers. When such a parameter specification is found, the outer loop of the program iterates over this
+particular parameter and the inner loop is run several times, each time feeding NoOfEvents into the engine. Of course, statistics
+are reset between runs of the outer loop, so we can test the influence of the variable parameter on performances.
+
+At most one parameter can be made variable (if several are specified as variables, only the last one will be considered and the
+other ones will be reported missing by the runner).
+
+In this mode the output, on the console, is a CSV rendering of triplets: paramX value;avg latency;throughput
+
+
+Event structure
+---------------
+Apart from the DummyRunner, which simply plots random latencies, all Esper-based runners derive from the abstract class EsperRunner.
+This expects two parameters, which are thus common (and mandatory) to all actual runners:
+- payloadSize
+- payloadType
+
+This allows testing the influence of the event POJOs on performance, if need be. The actual event POJOs, of type EventWithPayload,
+are simple wrappers for 1) a feeding time (used for latency calculation) and 2) a payload.
+
+The payload can be tuned with the 2 parameters above. payloadType allows variation on the payload structure: type 0 allocates an
+array of payloadSize bytes, whereas type 1 allocates nested ArrayList's of depth payloadSize (the payload is a list with a single
+element that in turn is a list with a single element etc.).
+
+Spoiler: payload size & types have no influence on performance, at least with the open source Esper engine. Of course EsperHA,
+which serializes events for durability, is probably very different in this respect, so these parameters are still interesting.
+Just bear in mind that the EsperHA license forbids performing and publishing benchmarks ;-)
+
+
+Runner available with this source code
+--------------------------------------
+These are the runner classes found in the com.octo.ebench.runner package. The expected parameters are also given (all integers).
+Also check the comments in the respective source files for more information.
+
+- DummyRunner: for testing purposes only, the reported latency is picked from a random generator
+     maxLatency: the maximum possible latency
+- EsperRunner: base class for Esper-based runners
+     payloadSize: size of the event payload
+     payloadType: 0 for a byte[], 1 for a list of list of list... (see above)
+     (these 2 parameters are also expected by the other runners below)
+- SingleStatement: a single statement listens for incoming events
+- ParallelStatements: several statements listen in parallel for the same incoming events
+     nStatements: the number of statements
+     listenerAttach: listener attachment mode
+        0 = first declared statement gets a listener
+        1 = last declared statement gets a listener
+        2 = all statements get a listener
+- ChainedStatements: several statements are chained together; a listener is plugged at the end of the statement chain
+     nStatements: the number of statements
+- ParallelFilteringStatements: several statements run in parallel. All have listeners but some will never match incoming events
+     nStatements: the total number of statements
+     nFilteringStatements: the number of statements that will leave out incoming events
+     filteringMethod: how to filter out events
+        0 = filter with a WHERE clause (tests for nullity of the payload, which is actually never null)
+        1 = filter with event type (SELECT FROM an event stream or the other, while actual events can only be of one type)
+
+
+Technical considerations
+------------------------
+Time intervals, and thus latencies, are measured in nanoseconds with System.nanoTime(), and converted to microseconds. The
+histogram is allocated as an array of long's, and must be able to hold as many elements as necessary to account for the repartition
+of latencies. The size of the array can be controlled by the system property maxExpectedLatency (JVM parameter -DmaxExpectedLatency=123).
+The default value is 100000, which means that any latency measured beyond 100 ms will trigger an ArrayIndexOutOfBoundsException.
+If this happens, consider increasing the value.
+
+The throughput calcuation also involves time measurements, which use System.nanoTime() as well.
